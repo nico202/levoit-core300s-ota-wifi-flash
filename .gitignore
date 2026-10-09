@@ -1,0 +1,16 @@
+# secrets
+firmware/secrets.yaml
+**/secrets.yaml
+
+# ESPHome build artifacts
+firmware/.esphome/
+dist/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# compiled helper
+scripts/arpspoof

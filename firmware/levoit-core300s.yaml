@@ -1,0 +1,70 @@
+# Minimal ESPHome config for the Levoit Core 300S (ESP32-SOLO-1C).
+# Kept small on purpose: the stock OTA slot is ~1.2 MB, so the app image must fit.
+# The `levoit` external component reverse-engineers the ESP<->MCU UART protocol.
+substitutions:
+  device_name: levoit-core300s
+  friendly_name: Levoit Core 300S
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_FREERTOS_UNICORE: y
+
+external_components:
+  # Component maintained by tuct (successor of acvigue/mulcmu work). Pinned ref recommended.
+  - source:
+      type: git
+      url: https://github.com/tuct/levoit
+      ref: main
+    components: [levoit]
+
+logger:
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  # Fallback AP shown when it can't join your Wi-Fi -- this is how you find it:
+  # connect to this SSID, then open http://192.168.4.1/ (captive portal).
+  ap:
+    ssid: "Levoit-Core300S"
+
+captive_portal:
+
+uart:
+  - id: uart_mcu2esp
+    tx_pin: GPIO17   # ESP TX -> MCU RX
+    rx_pin: GPIO16   # ESP RX <- MCU TX
+    baud_rate: 115200
+
+levoit:
+  id: levoitcore300
+  model: CORE300S
+
+fan:
+  - platform: levoit
+    levoit: levoitcore300
+    name: "Fan"
+
+sensor:
+  - platform: levoit
+    levoit: levoitcore300
+    name: "PM2.5"
+    type: pm25
+
+switch:
+  - platform: levoit
+    levoit: levoitcore300
+    name: "Display"
+    type: display
