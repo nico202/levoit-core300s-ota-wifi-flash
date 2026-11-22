@@ -54,7 +54,7 @@ Header (little detail, `0xFF` padding everywhere not listed):
 |  36    |   8  | device name, e.g. `Core300s` |
 |  52    |   6  | firmware version, e.g. `2.0.00` |
 |  68    |   3  | `1.0` |
-|  77    |   2  | region, e.g. `EU` |
+|  76    |   2  | region, e.g. `EU` |
 
 The payload begins with the ESP-IDF image magic `0xE9`. The firmware contains
 `Parse OTA header`, `OTA image has invalid magic byte (expected 0xE9)`,
