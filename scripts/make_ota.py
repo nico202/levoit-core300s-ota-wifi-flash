@@ -18,9 +18,9 @@ Header layout (reverse-engineered from a genuine Core300s EU OTA package):
      58       6   0xFF
      64       4   0xFF
      68       3   "1.0", 0xFF-padded              (part/min version tag)
-     71       6   0xFF
-     77       2   region, 0xFF-padded             ("EU", "US", ...)
-     79      49   0xFF
+     71       5   0xFF
+     76       2   region, 0xFF-padded             ("EU", "US", ...)
+     78      50   0xFF
 
 IMPORTANT: the version field MUST equal the version the cloud announced for
 this firmware (the device compares it), and the device name/region must match
@@ -47,7 +47,7 @@ def build_header(md5_hex: str, name: str, version: str, region: str) -> bytes:
     h[36:36 + min(len(name), 8)] = name.encode("ascii")[:8]
     h[52:52 + min(len(version), 6)] = version.encode("ascii")[:6]
     h[68:71] = b"1.0"
-    h[77:77 + min(len(region), 2)] = region.encode("ascii")[:2]
+    h[76:76 + min(len(region), 2)] = region.encode("ascii")[:2]
     return bytes(h)
 
 
