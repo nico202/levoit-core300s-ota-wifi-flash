@@ -1,37 +1,55 @@
 #!/usr/bin/env python3
 """
-cloud_ota.py - serve a 1.x VeSync OTA package and ask the VeSync cloud to push it.
+cloud_ota.py - serve a VeSync OTA package and ask the VeSync cloud to push it.
 
-The device downloads firmware over plain HTTP when the cloud sends it an
+The device downloads firmware over HTTP when the cloud sends it an
 ``upFirmware`` command.  Instead of ARP-spoofing ``fw.vesync.com`` (the approach
 in ``host_mitm.sh``), this script submits the command through the cloud's
 ``bypassV2`` relay with a URL that points at this machine, so no root and no L2
 tricks are needed:
 
-    upFirmware {url: http://<dashed-lan-ip>.nip.io:<port>/fw.bin,
-                newVersion: 2.0.00, pluginName: mainFw, upMode: 3}
+    bypassV2 -> upFirmware {url, newVersion, pluginName, upMode}        (1.x)
+    bypassV2 -> upFirmware {urlV1, newVersion, pluginName, upMode}      (2.x, --v2)
 
 The cloud forwards the command to the device; the device fetches the package
-from us and flashes it.  ``upMode`` must be **3 or 4** (1/2 are rejected by the
-firmware before it starts the download).  The URL must be a resolvable hostname
-that passes the cloud's URL filter - a raw private IP is rejected with HTTP 403;
-``<dashed-ip>.nip.io`` is accepted and resolves back to this machine.
+from us and flashes it.  ``upMode`` must be **3 or 4**.  The URL must be a
+resolvable hostname that passes the cloud's URL filter - a raw private IP is
+rejected with HTTP 403; ``<dashed-ip>.nip.io`` is accepted and resolves back to
+this machine.
 
-Requires: ``pip install pyvesync``, and VESYNC_USERNAME / VESYNC_PASSWORD in the
-environment.  Build the package first with ``make_ota_v1.py``.
+Two container generations exist:
+
+    v1 (1.0.00)  [0x01][AES-128-CBC header][app]   built by make_ota_v1.py
+    v2 (2.x)     [plaintext 128-byte header][app]  built by make_ota.py
+
+The 2.x handler reads ``urlV1`` and queues the OTA on its event loop; the 1.x
+handler reads ``url`` and starts the download task directly.  Use ``--v2`` for
+2.x units.
+
+Requires: ``pip install pyvesync``, and VESYNC_USERNAME / VESYNC_PASSWORD.
 
 Usage:
     export VESYNC_USERNAME='you@example.com' VESYNC_PASSWORD='...'
-    ./cloud_ota.py --cid <device-cid> --package dist/pkg-v1.bin \
-        --new-version 2.0.00 --port 18080
 
-    # print the JSON and serve only, for triggering by other means:
-    ./cloud_ota.py --package dist/pkg-v1.bin --print-json
+    # 1.x: build and deliver in one go
+    ./cloud_ota.py --cid <cid> --build-from firmware.ota.bin \\
+        --new-version 2.0.00 --model LAP-C302S-WGC --hw 1.0 --region AE
+
+    # 2.x
+    ./cloud_ota.py --v2 --cid <cid> --build-from firmware.ota.bin \\
+        --new-version 2.0.00 --name Core300s --region EU
+
+    # a package built earlier (make_ota_v1.py or make_ota.py)
+    ./cloud_ota.py --cid <cid> --package dist/pkg-v1.bin --new-version 2.0.00
+
+    # print the command and serve only, for triggering by other means
+    ./cloud_ota.py --v2 --package dist/pkg-v2.bin --print-json
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import http.server
 import json
 import os
@@ -41,6 +59,8 @@ import sys
 import threading
 import time
 import uuid
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def lan_ip() -> str:
@@ -106,21 +126,36 @@ def serve(package: bytes, port: int) -> socketserver.TCPServer:
     return srv
 
 
-def build_command(cid: str, url: str, version: str, plugin: str, up_mode: int) -> dict:
+def build_package(args) -> bytes:
+    if args.package:
+        return open(args.package, "rb").read()
+    app = open(args.build_from, "rb").read()
+    if not app or app[0] != 0xE9:
+        raise SystemExit("--build-from must be an ESP32 application image (starts 0xE9)")
+    if args.v2:
+        import make_ota  # plaintext 128-byte header
+        md5 = hashlib.md5(app).hexdigest()
+        return make_ota.build_header(md5, args.name, args.new_version, args.region) + app
+    import make_ota_v1  # encrypted 1.x container
+    pkg, _ = make_ota_v1.build_package(
+        app, args.model, args.new_version, args.hw, args.region
+    )
+    return pkg
+
+
+def build_command(cid: str, url: str, version: str, plugin: str, up_mode: int,
+                  v2: bool) -> dict:
+    data = {
+        "newVersion": version,
+        "pluginName": plugin,
+        ("urlV1" if v2 else "url"): url,
+        "upMode": up_mode,
+    }
     return {
         "method": "bypassV2",
         "cid": cid,
         "traceId": uuid.uuid4().hex,
-        "payload": {
-            "method": "upFirmware",
-            "source": "APP",
-            "data": {
-                "newVersion": version,
-                "pluginName": plugin,
-                "url": url,
-                "upMode": up_mode,
-            },
-        },
+        "payload": {"method": "upFirmware", "source": "APP", "data": data},
     }
 
 
@@ -169,9 +204,13 @@ async def inject(cmd: dict, country: str) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Serve a 1.x OTA package and push it via the cloud.")
+    ap = argparse.ArgumentParser(description="Serve an OTA package and push it via the cloud.")
     ap.add_argument("--cid", default="", help="device cid (auto-detected for a single device)")
-    ap.add_argument("--package", required=True, help="package built by make_ota_v1.py")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--package", help="package built by make_ota_v1.py (v1) or make_ota.py (v2)")
+    src.add_argument("--build-from", metavar="APP", help="build the package from an ESP32 app image")
+    ap.add_argument("--v2", action="store_true",
+                    help="2.x device/container: plaintext header, send 'urlV1'")
     ap.add_argument("--new-version", default="2.0.00", help="must match the package header")
     ap.add_argument("--plugin", default="mainFw")
     ap.add_argument("--up-mode", type=int, default=3, choices=[3, 4])
@@ -179,22 +218,33 @@ def main() -> int:
     ap.add_argument("--host-ip", default="", help="LAN IP to advertise (default: auto-detect)")
     ap.add_argument("--url", default="", help="override the advertised URL")
     ap.add_argument("--country", default=os.environ.get("VESYNC_COUNTRY", "US"))
+    ap.add_argument("--model", default="LAP-C302S-WGC", help="1.x model string")
+    ap.add_argument("--hw", default="1.0", help="1.x hardware version")
+    ap.add_argument("--name", default="Core300s", help="2.x device name")
+    ap.add_argument("--region", default="", help="region list (default: AE for 1.x, EU for 2.x)")
     ap.add_argument("--print-json", action="store_true", help="print the command and do not call the cloud")
     ap.add_argument("--wait", type=int, default=300, help="seconds to watch for the device")
     args = ap.parse_args()
+    args.region = args.region or ("EU" if args.v2 else "AE")
 
-    package = open(args.package, "rb").read()
+    package = build_package(args)
     if not package:
         print("empty package", file=sys.stderr)
         return 2
-    if package[0] != 0x01:
-        print(f"WARNING: package byte 0 is {package[0]:#04x}, not 0x01 "
-              f"(not a 1.x package?)", file=sys.stderr)
+    if args.v2:
+        if not chr(package[0]).upper() in "0123456789ABCDEF":
+            print(f"WARNING: package starts with {package[0]:#04x}, not an MD5 hex digit - "
+                  f"is this a 2.x (make_ota.py) package?", file=sys.stderr)
+    elif package[0] != 0x01:
+        print(f"WARNING: package starts with {package[0]:#04x}, not 0x01 - "
+              f"is this a 1.x (make_ota_v1.py) package?", file=sys.stderr)
+
     ip = args.host_ip or lan_ip()
     url = args.url or f"http://{ip.replace('.', '-')}.nip.io:{args.port}/fw.bin"
-    cmd = build_command(args.cid, url, args.new_version, args.plugin, args.up_mode)
+    cmd = build_command(args.cid, url, args.new_version, args.plugin, args.up_mode, args.v2)
 
-    print(f"[ota] serving {len(package)} bytes on 0.0.0.0:{args.port}")
+    print(f"[ota] {'2.x' if args.v2 else '1.x'} package, {len(package)} bytes, "
+          f"served on 0.0.0.0:{args.port}")
     print(f"[ota] device URL: {url}")
     print("[cloud] command:\n" + json.dumps(cmd, indent=2), flush=True)
     serve(package, args.port)

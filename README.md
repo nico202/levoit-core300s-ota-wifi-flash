@@ -41,6 +41,15 @@ export VESYNC_USERNAME='you@example.com' VESYNC_PASSWORD='...'
 fields. The format, key derivation and check order are in
 [`docs/protocol.md`](docs/protocol.md#firmware-100-1x-the-encrypted-container).
 
+For **2.x** units the container is the plaintext header from `make_ota.py`, and
+the cloud command uses the `urlV1` field instead of `url` (the 2.x handler never
+reads `url`). `cloud_ota.py --v2` handles both:
+
+```bash
+./scripts/cloud_ota.py --v2 --cid <cid> --build-from firmware.ota.bin \
+    --new-version 2.0.00 --name Core300s --region EU
+```
+
 ---
 
 ## How it works

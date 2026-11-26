@@ -166,3 +166,21 @@ command.
 > `make_ota_v1.py` builds and re-verifies it offline; hardware validation of the
 > full chain is still pending. Nothing here is signed, so any image the device
 > accepts will run.
+
+### 2.x devices: `urlV1`, not `url`
+
+The 2.0.00 handler (`bypass_method_up_firmware_handle`, 0x400e3d54) looks up
+`newVersion`, `pluginName`, **`urlV1`** and `upMode` - it never reads `url`, and
+it rejects the command if `strlen(urlV1) < 2`. A 1.x-style command (with `url`)
+therefore fails on a 2.x unit even though the rest is identical.
+
+The 2.x start path is also deferred: the handler validates the plugin, copies the
+0x120-byte context and posts it to the event loop (`0x400e0f6c`); the completion
+(`0x400dd24c`) then runs `vesync_ota_start_internal` and the OTA task. `upMode`
+3/4 queue immediately; 1/2 must pass the status gate at `0x400dd238` first.
+Expect the HTTP GET a moment after the cloud accepts the command - the download
+is asynchronous, unlike 1.0.00, which creates the download task inline.
+
+Container: 2.x uses the plaintext 128-byte header built by `make_ota.py`; there
+is no `0x01` prefix and no AES layer. `cloud_ota.py --v2` selects the `urlV1`
+field and the plaintext package handling.
